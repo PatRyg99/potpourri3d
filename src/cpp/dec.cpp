@@ -59,7 +59,7 @@ public:
   }
 
   // 2-form to 1-form
-  DenseMatrix<double> fieldTo1Form(DenseMatrix<double> field) {
+  DenseMatrix<double> to1Form(DenseMatrix<double> field) {
     DenseMatrix<double> E(mesh->nEdges(), 1);
     FaceData<size_t> faceIndex = geom->faceIndices;
     EdgeData<size_t> edgeIndex = geom->edgeIndices;
@@ -85,6 +85,45 @@ public:
     }
 
     return E;
+  }
+
+  // 1-form to 2-form
+  DenseMatrix<double> toField(DenseMatrix<double> oneForm) {
+    DenseMatrix<double> field(mesh->nFaces(), 3);
+    FaceData<size_t> faceIndex = geom->faceIndices;
+    EdgeData<size_t> edgeIndex = geom->edgeIndices;
+
+    for (Face f: mesh->faces()) {
+      Halfedge h = f.halfedge();
+
+      Vector3 pi{geom->vertexPositions[h.vertex()]};
+      Vector3 pj{geom->vertexPositions[h.next().vertex()]};
+      Vector3 pk{geom->vertexPositions[h.next().next().vertex()]};
+      Vector3 eij = pj - pi;
+      Vector3 ejk = pk - pj;
+      Vector3 eki = pi - pk;
+
+      double cij = oneForm(edgeIndex[h.edge()], 0);
+      double cjk = oneForm(edgeIndex[h.next().edge()], 0);
+      double cki = oneForm(edgeIndex[h.next().next().edge()], 0);
+      if (h.edge().halfedge() != h) cij *= -1;
+      if (h.next().edge().halfedge() != h.next()) cjk *= -1;
+			if (h.next().next().edge().halfedge() != h.next().next()) cki *= -1;
+
+      Vector3 a = (eki - ejk) * cij;
+      Vector3 b = (eij - eki) * cjk;
+      Vector3 c = (ejk - eij) * cki;
+
+      double A = geom->faceArea(f);
+      Vector3 N = geom->faceNormal(f);
+      Vector3 F = cross(N, a + b + c) / (6 * A);
+
+      field(faceIndex[f], 0) = F[0];
+      field(faceIndex[f], 1) = F[1];
+      field(faceIndex[f], 2) = F[2];
+    }
+
+    return field;
   }
 
   // Perform Hodge decomposition
@@ -131,6 +170,7 @@ void bind_dec(py::module& m) {
         .def(py::init<DenseMatrix<double>, DenseMatrix<int64_t>>())
         .def("divergence", &DifferentialExteriorCalculus::divergence, py::arg("oneForm"))
         .def("curl", &DifferentialExteriorCalculus::curl, py::arg("oneForm"))
-        .def("field_to_1form", &DifferentialExteriorCalculus::fieldTo1Form, py::arg("field"))
+        .def("to_1Form", &DifferentialExteriorCalculus::to1Form, py::arg("field"))
+        .def("to_field", &DifferentialExteriorCalculus::toField, py::arg("one_form"))
         .def("hodge_decomposition", &DifferentialExteriorCalculus::hodgeDecomposition, py::arg("one_form"));
 }
