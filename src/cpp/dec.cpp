@@ -38,16 +38,13 @@ public:
   DifferentialExteriorCalculus(DenseMatrix<double> verts, DenseMatrix<int64_t> faces) {
 
     // Construct the internal mesh and geometry
-    mesh.reset(new SurfaceMesh(faces));
+    mesh.reset(new ManifoldSurfaceMesh(faces));
     geom.reset(new VertexPositionGeometry(*mesh));
     for (size_t i = 0; i < mesh->nVertices(); i++) {
       for (size_t j = 0; j < 3; j++) {
         geom->inputVertexPositions[i][j] = verts(i, j);
       }
     }
-
-    geom->requireFaceIndices();  
-    geom->requireEdgeIndices();   
   }
 
   DenseMatrix<double> divergence(DenseMatrix<double> oneForm) {
@@ -59,39 +56,32 @@ public:
   }
 
   // 2-form to 1-form
-  DenseMatrix<double> to1Form(DenseMatrix<double> field) {
-    DenseMatrix<double> E(mesh->nEdges(), 1);
-    FaceData<size_t> faceIndex = geom->faceIndices;
-    EdgeData<size_t> edgeIndex = geom->edgeIndices;
+  Vector<double> toEdge1Form(DenseMatrix<double> field) {
+    Vector<double> form = Vector<double>::Zero(mesh->nEdges());
 
     for (Edge e: mesh->edges()) {
       Halfedge h = e.halfedge();
+      Vector3 f1, f2;
 
-      Vector3 f1{
-        field(faceIndex[h.face()], 0),
-        field(faceIndex[h.face()], 1),
-        field(faceIndex[h.face()], 2)
-      };  
-      Vector3 f2{
-        field(faceIndex[h.twin().face()], 0),
-        field(faceIndex[h.twin().face()], 1),
-        field(faceIndex[h.twin().face()], 2)
-      };
-      Vector3 direction = {
-        geom->vertexPositions[h.next().vertex()] - geom->vertexPositions[h.vertex()]
-      };
+      if (h.isInterior()) {
+        for (int i = 0; i < 3; i++) f1[i] = field(h.face().getIndex(), i);
+      } else f1 = Vector3({0, 0, 0});
 
-      E(edgeIndex[e], 0) = dot((f1 + f2), direction) / 2;
+      if (h.twin().isInterior()) {
+        for (int i = 0; i < 3; i++) f2[i] = field(h.face().getIndex(), i);
+      } else f2 = Vector3({0, 0, 0});
+
+      Vector3 vec = geom->halfedgeVector(h);
+
+      form[e.getIndex()] = dot(f1 + f2, vec) * 0.5;
     }
 
-    return E;
+    return form;
   }
 
   // 1-form to 2-form
-  DenseMatrix<double> toField(DenseMatrix<double> oneForm) {
+  DenseMatrix<double> toFace2Form(DenseMatrix<double> oneForm) {
     DenseMatrix<double> field(mesh->nFaces(), 3);
-    FaceData<size_t> faceIndex = geom->faceIndices;
-    EdgeData<size_t> edgeIndex = geom->edgeIndices;
 
     for (Face f: mesh->faces()) {
       Halfedge h = f.halfedge();
@@ -103,9 +93,9 @@ public:
       Vector3 ejk = pk - pj;
       Vector3 eki = pi - pk;
 
-      double cij = oneForm(edgeIndex[h.edge()], 0);
-      double cjk = oneForm(edgeIndex[h.next().edge()], 0);
-      double cki = oneForm(edgeIndex[h.next().next().edge()], 0);
+      double cij = oneForm(h.edge().getIndex(), 0);
+      double cjk = oneForm(h.next().edge().getIndex(), 0);
+      double cki = oneForm(h.next().next().edge().getIndex(), 0);
       if (h.edge().halfedge() != h) cij *= -1;
       if (h.next().edge().halfedge() != h.next()) cjk *= -1;
 			if (h.next().next().edge().halfedge() != h.next().next()) cki *= -1;
@@ -116,11 +106,11 @@ public:
 
       double A = geom->faceArea(f);
       Vector3 N = geom->faceNormal(f);
-      Vector3 F = cross(N, a + b + c) / (6 * A);
+      Vector3 vec = cross(N, a + b + c) / (6 * A);
 
-      field(faceIndex[f], 0) = F[0];
-      field(faceIndex[f], 1) = F[1];
-      field(faceIndex[f], 2) = F[2];
+      field(f.getIndex(), 0) = vec[0];
+      field(f.getIndex(), 1) = vec[1];
+      field(f.getIndex(), 2) = vec[2];
     }
 
     return field;
@@ -170,7 +160,7 @@ void bind_dec(py::module& m) {
         .def(py::init<DenseMatrix<double>, DenseMatrix<int64_t>>())
         .def("divergence", &DifferentialExteriorCalculus::divergence, py::arg("oneForm"))
         .def("curl", &DifferentialExteriorCalculus::curl, py::arg("oneForm"))
-        .def("to_1Form", &DifferentialExteriorCalculus::to1Form, py::arg("field"))
-        .def("to_field", &DifferentialExteriorCalculus::toField, py::arg("one_form"))
+        .def("to_Edge1Form", &DifferentialExteriorCalculus::toEdge1Form, py::arg("field"))
+        .def("to_Face2Form", &DifferentialExteriorCalculus::toFace2Form, py::arg("one_form"))
         .def("hodge_decomposition", &DifferentialExteriorCalculus::hodgeDecomposition, py::arg("one_form"));
 }
