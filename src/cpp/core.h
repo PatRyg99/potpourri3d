@@ -19,3 +19,4 @@ using namespace geometrycentral::pointcloud;
 void bind_io(py::module& m);
 void bind_mesh(py::module& m);
 void bind_point_cloud(py::module& m);
+void bind_dec(py::module& m);
