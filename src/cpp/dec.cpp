@@ -45,8 +45,46 @@ public:
         geom->inputVertexPositions[i][j] = verts(i, j);
       }
     }
+
+    geom->requireDECOperators();
+
+    // Precompute A for exact solve
+    A = geom->d0.transpose() * geom->hodge1 * geom->d0;
+    SparseMatrix<double> identityMatrix(A.rows(), A.cols());
+    identityMatrix.setIdentity();
+    A = A + identityMatrix * 1e-8;
+
+    // Precompute B for coexact solve
+    B = geom->d1 * geom->hodge1Inverse * geom->d1.transpose();
   }
 
+  // DEC fields
+  SparseMatrix<double> d0() {
+    return geom->d0;
+  }
+  SparseMatrix<double> d1() {
+    return geom->d1;
+  }
+  SparseMatrix<double> hodge0() {
+    return geom->hodge0;
+  }
+  SparseMatrix<double> hodge1() {
+    return geom->hodge1;
+  }
+  SparseMatrix<double> hodge2() {
+    return geom->hodge2;
+  }
+  SparseMatrix<double> hodge0Inverse() {
+    return geom->hodge0Inverse;
+  }
+  SparseMatrix<double> hodge1Inverse() {
+    return geom->hodge1Inverse;
+  }
+  SparseMatrix<double> hodge2Inverse() {
+    return geom->hodge2Inverse;
+  }
+
+  // DEC operators
   DenseMatrix<double> divergence(DenseMatrix<double> oneForm) {
     return geom->hodge0Inverse * geom->d0.transpose() * geom->hodge1 * oneForm;
   }
@@ -55,8 +93,35 @@ public:
     return geom->hodge2 * geom->d1 * oneForm;
   }
 
+  DenseMatrix<int> getEdgeFaces() {
+    DenseMatrix<int> indices(mesh->nEdges(), 2);
+
+    for (Edge e: mesh->edges()) {
+      Halfedge h = e.halfedge();
+      indices(e.getIndex(), 0) = h.face().getIndex();
+      indices(e.getIndex(), 1) = h.twin().face().getIndex();
+    }
+
+    return indices;
+  }
+
+  DenseMatrix<double> getEdgeVectors() {
+    DenseMatrix<double> halfedgeVectors(mesh->nEdges(), 3);
+
+    for (Edge e: mesh->edges()) {
+      Halfedge h = e.halfedge();
+      Vector3 vec = geom->halfedgeVector(h);
+
+      halfedgeVectors(e.getIndex(), 0) = vec[0];
+      halfedgeVectors(e.getIndex(), 1) = vec[1];
+      halfedgeVectors(e.getIndex(), 2) = vec[2];
+    }
+
+    return halfedgeVectors;
+  }
+
   // 2-form to 1-form
-  Vector<double> toEdge1Form(DenseMatrix<double> field) {
+  Vector<double> to1Form(DenseMatrix<double> field) {
     Vector<double> form = Vector<double>::Zero(mesh->nEdges());
 
     for (Edge e: mesh->edges()) {
@@ -68,7 +133,7 @@ public:
       } else f1 = Vector3({0, 0, 0});
 
       if (h.twin().isInterior()) {
-        for (int i = 0; i < 3; i++) f2[i] = field(h.face().getIndex(), i);
+        for (int i = 0; i < 3; i++) f2[i] = field(h.twin().face().getIndex(), i);
       } else f2 = Vector3({0, 0, 0});
 
       Vector3 vec = geom->halfedgeVector(h);
@@ -79,8 +144,8 @@ public:
     return form;
   }
 
-  // 1-form to 2-form
-  DenseMatrix<double> toFace2Form(DenseMatrix<double> oneForm) {
+  // 1-form to Whitney 1-form
+  DenseMatrix<double> interpolate1Form(DenseMatrix<double> oneForm) {
     DenseMatrix<double> field(mesh->nFaces(), 3);
 
     for (Face f: mesh->faces()) {
@@ -118,31 +183,18 @@ public:
 
   // Perform Hodge decomposition
   std::tuple<Vector<double>, Vector<double>, Vector<double>> hodgeDecomposition(Vector<double> oneForm) {
-    geom->requireDECOperators();
 
-    //// EXACT
-    // Define equation: Ax = a
-    SparseMatrix<double> A = (geom->d0.transpose() * geom->hodge1 * geom->d0);
-    SparseMatrix<double> identityMatrix(A.rows(), A.cols());
-    identityMatrix.setIdentity();
-    A = A + (identityMatrix * 1e-8);
-
+    // Solve exact
     Vector<double> a = geom->d0.transpose() * geom->hodge1 * oneForm;
-
-    // Solve
     PositiveDefiniteSolver<double> choleskySolver(A);
     Vector<double> exact = geom->d0 * choleskySolver.solve(a);
 
-    //// COEXACT
-    // Define equation: Bx = b
-    SparseMatrix<double> B = geom->d1 * geom->hodge1Inverse * geom->d1.transpose();
+    // Solve coexact 
     Vector<double> b = geom->d1 * oneForm;
-
-    // Solve
     SquareSolver<double> LUSolver(B);
     Vector<double> coexact = geom->hodge1Inverse * geom->d1.transpose() * LUSolver.solve(b);
 
-    //// Harmonic
+    // Harmonic
     Vector<double> harmonic = oneForm - (exact + coexact); 
 
     return std::tuple<Vector<double>, Vector<double>, Vector<double>> (exact, coexact, harmonic);
@@ -151,6 +203,8 @@ public:
 private:
   std::unique_ptr<SurfaceMesh> mesh;
   std::unique_ptr<VertexPositionGeometry> geom;
+  SparseMatrix<double> A;
+  SparseMatrix<double> B;
 };
 
 // Actual binding code
@@ -158,9 +212,19 @@ private:
 void bind_dec(py::module& m) {
   py::class_<DifferentialExteriorCalculus>(m, "DifferentialExteriorCalculus")
         .def(py::init<DenseMatrix<double>, DenseMatrix<int64_t>>())
-        .def("divergence", &DifferentialExteriorCalculus::divergence, py::arg("oneForm"))
-        .def("curl", &DifferentialExteriorCalculus::curl, py::arg("oneForm"))
-        .def("to_Edge1Form", &DifferentialExteriorCalculus::toEdge1Form, py::arg("field"))
-        .def("to_Face2Form", &DifferentialExteriorCalculus::toFace2Form, py::arg("one_form"))
+        .def("d0", &DifferentialExteriorCalculus::d0)
+        .def("d1", &DifferentialExteriorCalculus::d1)
+        .def("hodge0", &DifferentialExteriorCalculus::hodge0)
+        .def("hodge1", &DifferentialExteriorCalculus::hodge1)
+        .def("hodge2", &DifferentialExteriorCalculus::hodge2)
+        .def("hodge0Inverse", &DifferentialExteriorCalculus::hodge0Inverse)
+        .def("hodge1Inverse", &DifferentialExteriorCalculus::hodge1Inverse)
+        .def("hodge2Inverse", &DifferentialExteriorCalculus::hodge2Inverse)
+        .def("divergence", &DifferentialExteriorCalculus::divergence, py::arg("one_form"))
+        .def("curl", &DifferentialExteriorCalculus::curl, py::arg("one_form"))
+        .def("edge_faces", &DifferentialExteriorCalculus::getEdgeFaces)
+        .def("edge_vectors", &DifferentialExteriorCalculus::getEdgeVectors)
+        .def("to_1Form", &DifferentialExteriorCalculus::to1Form, py::arg("field"))
+        .def("interpolate_1Form", &DifferentialExteriorCalculus::interpolate1Form, py::arg("one_form"))
         .def("hodge_decomposition", &DifferentialExteriorCalculus::hodgeDecomposition, py::arg("one_form"));
 }
